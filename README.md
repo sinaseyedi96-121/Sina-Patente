@@ -30,3 +30,8 @@ When you change `app.js`, `style.css`, `index.html` or the data files, bump `VER
 ## Sources
 
 Questions, images and Italian theory come from [avalla/quiz-patente-ab](https://github.com/avalla/quiz-patente-ab) (MIT licence), checked against [Ed0ardo/QuizPatenteB](https://github.com/Ed0ardo/QuizPatenteB) and [Privitorta/QuizPatenteA-B](https://github.com/Privitorta/QuizPatenteA-B). These are community copies of the official Ministry pool, not official files. English and Persian translations were written by Claude. Before the real exam, also practise on the Ministry's own simulator.
+
+
+## Persian question translations
+
+See `TRANSLATE_FA.md`. Files go in `data/tr/fa/`, one per chapter.

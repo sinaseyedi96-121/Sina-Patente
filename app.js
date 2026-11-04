@@ -21,7 +21,20 @@ let THEORY = {};                // theory id -> [title, text] (Italian)
 const TOPIC = new Map();        // theory id -> {th, ch, qids, imgs}
 const TOPICS_BY_CH = new Map(); // chapter -> [theory ids]
 const CH_IMG = new Map();       // chapter -> representative image
-const TR = { q: {}, t: {} };
+// Chapters whose questions have no (or almost no) pictures get a matching sign from the pool,
+// or a sign-style pictogram drawn for the app (images/c20.svg, c22.svg, c23.svg).
+const CH_IMG_EXTRA = {
+  12: 57,                  // Distanza di sicurezza: minimum-distance sign
+  15: 56,                  // Norme sul sorpasso: no-overtaking sign
+  16: 84,                  // Fermata e sosta: no-parking sign
+  19: 707,                 // Dispositivi di equipaggiamento: seat-belt symbol
+  20: 'images/c20.svg',    // Patenti di guida: licence card
+  22: 'images/c22.svg',    // Condizioni fisiche e psichiche: alcohol
+  23: 'images/c23.svg',    // Responsabilità: scales of justice
+  24: 254,                 // Limitazione dei consumi: fuel station sign
+  25: 252                  // Elementi del veicolo: mechanical assistance sign
+};
+const TR = { q: {}, qfa: {}, t: {} };
 const SEARCH = new Map();       // theory id -> lowercase searchable text
 let S = loadState();
 let view = { name: 'home' };
@@ -30,7 +43,7 @@ let session = null;
 let timerId = null;
 
 /* ---------- storage ---------- */
-function freshState() { return { st: {}, bm: [], exams: [], tab: 'en', autoEn: false, days: {} }; }
+function freshState() { return { st: {}, bm: [], exams: [], tab: 'en', autoEn: false, days: {}, goal: 30, trap: true, installSeen: false }; }
 function loadState() {
   const base = freshState();
   try {
@@ -44,7 +57,7 @@ function save() {
 
 /* ---------- helpers ---------- */
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const imgSrc = n => `images/${String(n).padStart(3, '0')}.gif`;
+const imgSrc = n => (typeof n === 'string' ? n : `images/${String(n).padStart(3, '0')}.gif`);
 const pad2 = n => String(n).padStart(2, '0');
 const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
@@ -56,6 +69,19 @@ const savedIds = () => S.bm.filter(id => Q.has(id));
 const fold = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const LANGS = [['it', 'Italiano'], ['en', 'English'], ['fa', 'فارسی']];
+
+// Words that often decide whether a quiz statement is true or false.
+const TRAP_RE = /(^|[^\p{L}])(sempre|mai|solo|soltanto|esclusivamente|unicamente|solamente|tutti|tutte|qualsiasi|qualunque|comunque|in ogni caso|necessariamente|sicuramente|obbligatoriamente|nessun|nessuno|nessuna|almeno)(?=[^\p{L}]|$)/giu;
+const itText = t => (S.trap ? esc(t).replace(TRAP_RE, '$1<mark class="trap">$2</mark>') : esc(t));
+
+const GOALS = [20, 30, 50, 100];
+const todayCount = () => S.days[dayKey()] || 0;
+
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const PLATFORM = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  ? 'ios' : /android/i.test(navigator.userAgent) ? 'android' : 'ios';
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; });
 
 function streak() {
   let n = 0;
@@ -99,7 +125,12 @@ const P = {
   flame: '<path d="M12 21.5c3.9 0 6.5-2.7 6.5-6.4 0-3.9-2.9-6-4.2-10.1-1.8 1.6-2.6 3.5-2.6 5.4-1-.6-2-1.8-2.3-3.6C7 9 5.5 11.4 5.5 15.1c0 3.7 2.6 6.4 6.5 6.4z"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
   play: '<path d="M7 4.5v15l12-7.5z"/>',
-  timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/>'
+  timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.2-2.4 3.8M12 17h.01"/>',
+  share: '<path d="M12 3v12M8 7l4-4 4 4"/><path d="M8 11H6a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-2"/>',
+  plusbox: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/>',
+  dots: '<circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.3"/>'
 };
 const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n]}</svg>`;
 
@@ -134,6 +165,7 @@ async function loadData() {
     TOPICS_BY_CH.get(info.ch).push(th);
   }
   for (const [ch, m] of chImg) CH_IMG.set(ch, ranked(m)[0]);
+  for (const [ch, img] of Object.entries(CH_IMG_EXTRA)) CH_IMG.set(+ch, img);
 
   await Promise.all(CHAPTERS.map(async c => {
     try {
@@ -143,6 +175,12 @@ async function loadData() {
       Object.assign(TR.q, d.q || {});
       Object.assign(TR.t, d.t || {});
     } catch (e) { /* chapter not translated yet */ }
+    try {
+      const r = await fetch(`data/tr/fa/ch${pad2(c.n)}.json`);
+      if (!r.ok) return;
+      const d = await r.json();
+      Object.assign(TR.qfa, d.q || {});
+    } catch (e) { /* Persian for this chapter not added yet */ }
   }));
 }
 function searchText(th) {
@@ -203,7 +241,7 @@ function topicRow(th, from) {
   const info = TOPIC.get(th);
   const sub = TR.t[th] && TR.t[th][subLang()] ? TR.t[th][subLang()][0] : '';
   return `<li><button class="row" data-act="topic" data-th="${th}" data-from="${from}">
-    ${thumb(info.imgs[0], icon('book'), 'sm')}
+    ${thumb(info.imgs[0] || CH_IMG.get(info.ch), icon('book'), 'sm')}
     <span class="row-main">
       <b lang="it">${esc(THEORY[th][0])}</b>
       ${sub ? `<small ${subLang() === 'fa' ? 'dir="rtl" lang="fa"' : ''}>${esc(sub)}</small>` : ''}
@@ -223,27 +261,38 @@ function formatText(s) {
     return `<p>${lines.map(esc).join('<br>')}</p>`;
   }).join('').replace(/<\/ul><ul>/g, '');
 }
+const THEORY_LANGS = [
+  ['it', 'Italiano', ''],
+  ['en', 'English', "English for this topic isn't ready yet."],
+  ['fa', 'فارسی', 'ترجمهٔ فارسی این بخش هنوز آماده نیست.']
+];
 function topicHTML(th, inSheet) {
-  const it = THEORY[th];
   const info = TOPIC.get(th);
   const t = TR.t[th] || {};
-  let body = it, lang = 'it', note = '';
-  if (S.tab !== 'it') {
-    if (t[S.tab]) { body = t[S.tab]; lang = S.tab; }
-    else note = S.tab === 'fa' ? 'ترجمهٔ فارسی این بخش هنوز آماده نیست. متن ایتالیایی نمایش داده می‌شود.' : "English for this topic isn't ready yet. Showing Italian.";
-  }
-  const imgs = info ? info.imgs : [];
+  let imgs = info ? info.imgs : [];
+  if (!imgs.length && info && CH_IMG_EXTRA[info.ch]) imgs = [CH_IMG_EXTRA[info.ch]];
+  const sections = THEORY_LANGS.map(([lang, label, missing], k) => {
+    const body = lang === 'it' ? THEORY[th] : t[lang];
+    const rtl = lang === 'fa';
+    return `<article class="theory card" id="th-${lang}" dir="${rtl ? 'rtl' : 'ltr'}" lang="${lang}">
+      <span class="lang-label">${label}</span>
+      ${body
+        ? `<h2 ${k === 0 ? 'id="sheet-title"' : ''}>${esc(body[0])}</h2>${formatText(body[1])}`
+        : `<p class="note">${esc(missing)}</p>`}
+    </article>`;
+  }).join('');
   return `
-    ${langSwitch()}
     ${imgs.length ? `<div class="gallery ${imgs.length === 1 ? 'one' : ''}">${imgs.map(n => `<figure><img src="${imgSrc(n)}" alt="" loading="lazy"></figure>`).join('')}</div>` : ''}
-    ${note ? `<p class="note" ${S.tab === 'fa' ? 'dir="rtl"' : ''}>${esc(note)}</p>` : ''}
-    <article class="theory card" dir="${lang === 'fa' ? 'rtl' : 'ltr'}" lang="${lang}">
-      <h2 id="sheet-title">${esc(body[0])}</h2>
-      ${lang !== 'it' ? `<p class="it-title" lang="it" dir="ltr">${esc(it[0])}</p>` : ''}
-      ${formatText(body[1])}
-    </article>
+    <nav class="lang-jump" aria-label="Jump to language">
+      ${THEORY_LANGS.map(([lang, label]) => `<button data-goto="${lang}" ${lang === 'fa' ? 'lang="fa"' : ''}>${label}</button>`).join('')}
+    </nav>
+    ${sections}
     ${info && !inSheet ? `<button class="btn primary block" data-act="practice-topic" data-th="${th}">${icon('play')}Practice ${Math.min(info.qids.length, TOPIC_MAX)} questions on this topic</button>` : ''}
     ${inSheet ? '<button class="btn block" data-close>Back to the question</button>' : ''}`;
+}
+function gotoLang(lang) {
+  const el = document.getElementById(`th-${lang}`);
+  if (el) el.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
 }
 
 /* ---------- home ---------- */
@@ -264,6 +313,7 @@ function renderHome() {
         <img class="hero-logo" src="icons/icon-180.png" alt="">
         <div class="hero-txt"><h1>Sina Patente</h1><p>${greeting()}</p></div>
         ${st ? `<span class="streak" aria-label="${st} days in a row">${icon('flame')}${st}</span>` : ''}
+        <button class="hero-help ${st ? '' : 'alone'}" data-act="install" aria-label="How to install the app">${icon('help')}</button>
       </div>
       <div class="hero-stats">
         <div><b>${pct(seen, Q.size)}%</b><span>questions seen</span></div>
@@ -271,6 +321,8 @@ function renderHome() {
         <div><b>${passed}<small>/${S.exams.length}</small></b><span>exams passed</span></div>
       </div>
     </header>
+
+    ${goalCard()}
 
     <button class="exam-card" data-act="exam">
       <span class="exam-sign">30</span>
@@ -291,6 +343,20 @@ function renderHome() {
     <div class="sec-head"><h2>Practice by chapter</h2><span>${CHAPTERS.length} chapters</span></div>
     <ul class="list">${CHAPTERS.map(c => chapterRow(c, 'home')).join('')}</ul>
   `;
+}
+
+function goalCard() {
+  const n = todayCount(), g = S.goal;
+  const done = n >= g;
+  return `<button class="goal card ${done ? 'done' : ''}" data-act="quick">
+    <span class="goal-ic">${icon(done ? 'check' : 'target')}</span>
+    <span class="goal-txt">
+      <b>${done ? 'Daily goal reached' : 'Today’s goal'}</b>
+      <span class="meter ${done ? '' : 'blue'}"><i style="width:${Math.min(100, n / g * 100)}%"></i></span>
+      <small>${n} of ${g} questions${done ? ' · keep going if you like' : ` · ${g - n} to go`}</small>
+    </span>
+    <span class="go">${icon('play')}</span>
+  </button>`;
 }
 
 /* ---------- chapter ---------- */
@@ -358,7 +424,7 @@ function renderProgress() {
   const exams = S.exams.slice(-14);
   const passed = S.exams.filter(e => e.errors <= MAX_ERRORS).length;
   app.innerHTML = `
-    <header class="page-head"><h1>Progress</h1><p>Saved on this iPhone</p></header>
+    <header class="page-head"><h1>Progress</h1><p>Saved on this phone</p></header>
     <div class="stat-grid">
       <div class="stat card"><b>${seen.toLocaleString()}</b><span>of ${Q.size.toLocaleString()} questions seen</span></div>
       <div class="stat card"><b>${acc === null ? '–' : acc + '%'}</b><span>answers right</span></div>
@@ -387,9 +453,19 @@ function renderProgress() {
 
     <section class="card">
       <h3>Settings</h3>
-      <label class="set-row"><span><b>Show English automatically</b><small>Otherwise tap the question to see it</small></span>
+      <div class="set-row col"><span><b>Daily goal</b><small>Questions to answer each day</small></span>
+        <div class="seg" role="radiogroup" aria-label="Daily goal">${GOALS.map(g => `<button role="radio" data-act="goal" data-n="${g}" aria-selected="${S.goal === g}" aria-checked="${S.goal === g}">${g}</button>`).join('')}</div></div>
+      <label class="set-row"><span><b>Show translations automatically</b><small>English and Persian. Otherwise tap the question to see them</small></span>
         <input type="checkbox" class="switch" data-act="autoEn" ${S.autoEn ? 'checked' : ''}></label>
+      <label class="set-row"><span><b>Highlight trap words</b><small>Words like <mark class="trap">sempre</mark>, <mark class="trap">mai</mark> and <mark class="trap">solo</mark> often decide if a statement is true or false</small></span>
+        <input type="checkbox" class="switch" data-act="trap" ${S.trap ? 'checked' : ''}></label>
       <div class="set-row col"><span><b>Theory language</b></span>${langSwitch()}</div>
+    </section>
+
+    <section class="card">
+      <h3>Install</h3>
+      <p class="hint">${isStandalone() ? 'You’re using the installed app.' : 'Add the app to your home screen so it opens full screen and works offline.'}</p>
+      <button class="btn block" data-act="install">${icon('help')}How to install on iPhone and Android</button>
     </section>
 
     <section class="card">
@@ -446,8 +522,10 @@ function record(id, correct) {
   s.s++; if (correct) { s.c++; s.w = 0; } else { s.w = 1; }
   S.st[id] = s;
   const k = dayKey();
-  S.days[k] = (S.days[k] || 0) + 1;
+  const before = S.days[k] || 0;
+  S.days[k] = before + 1;
   save();
+  if (before < S.goal && before + 1 >= S.goal) setTimeout(() => { confetti(); toast(`Daily goal reached: ${S.goal} questions today`); }, 250);
 }
 
 /* ---------- question screen ---------- */
@@ -460,13 +538,31 @@ function renderQuestion() {
   const answered = picked !== null;
   const ok = answered && picked === q.ans;
   const en = TR.q[id];
+  const fa = TR.qfa[id];
   const done = s.ans.filter(a => a !== null).length;
   const progress = exam ? done : s.i + (answered ? 1 : 0);
   const th = q.th;
   const last = s.i === s.ids.length - 1;
 
+  const errors = exam ? s.ids.reduce((n, qid, k) => n + (s.ans[k] !== null && s.ans[k] !== Q.get(qid).ans ? 1 : 0), 0) : 0;
+  const verdict = `
+      <div class="verdict ${ok ? 'ok' : 'no'}">
+        <span class="mark">${icon(ok ? 'check' : 'close')}</span>
+        <span><b>${ok ? pick(['Correct!', 'Esatto!', 'Bravo!', 'Right!']) : 'Not quite'}</b>
+        <span>The answer is <strong>${q.ans ? 'VERO' : 'FALSO'}</strong> (${q.ans ? 'true' : 'false'})</span></span>
+      </div>`;
+
   let bar;
-  if (exam) {
+  if (exam && answered) {
+    bar = `${verdict}
+      <div class="exam-nav">
+        <button class="icon-btn" data-act="prev" aria-label="Previous question" ${s.i === 0 ? 'disabled' : ''}>${icon('back')}</button>
+        ${last
+          ? `<button class="btn primary grow" data-act="submit">Submit exam · ${done}/${s.ids.length}</button>`
+          : `<button class="btn primary grow" data-act="skip">Next question${icon('arrow')}</button>`}
+      </div>
+      ${done === s.ids.length && !last ? `<button class="btn block submit-after" data-act="submit">Submit exam</button>` : ''}`;
+  } else if (exam) {
     bar = `
       ${done === s.ids.length || last ? `<button class="btn primary block submit" data-act="submit">Submit exam · ${done}/${s.ids.length} answered</button>` : ''}
       <div class="exam-nav">
@@ -483,12 +579,7 @@ function renderQuestion() {
       <button class="falso" data-act="answer" data-v="0">FALSO<small>False</small></button>
     </div>`;
   } else {
-    bar = `
-      <div class="verdict ${ok ? 'ok' : 'no'}">
-        <span class="mark">${icon(ok ? 'check' : 'close')}</span>
-        <span><b>${ok ? pick(['Correct!', 'Esatto!', 'Bravo!', 'Right!']) : 'Not quite'}</b>
-        <span>The answer is <strong>${q.ans ? 'VERO' : 'FALSO'}</strong> (${q.ans ? 'true' : 'false'})</span></span>
-      </div>
+    bar = `${verdict}
       <button class="btn primary block" data-act="next">${last ? 'See results' : 'Next question'}${icon('arrow')}</button>`;
   }
 
@@ -496,7 +587,7 @@ function renderQuestion() {
     <div class="qtop">
       <button class="icon-btn" data-act="quit" aria-label="Close">${icon('close')}</button>
       <div class="qprog">
-        <div class="qprog-txt"><b>${esc(s.title)}</b><span>${s.i + 1}/${s.ids.length}</span></div>
+        <div class="qprog-txt"><b>${exam ? `<em class="${errors > MAX_ERRORS ? 'over' : ''}">${errors} ${errors === 1 ? 'mistake' : 'mistakes'}</em>` : esc(s.title)}</b><span>${s.i + 1}/${s.ids.length}</span></div>
         <span class="meter blue"><i style="width:${progress / s.ids.length * 100}%"></i></span>
       </div>
       ${exam ? `<span class="timer" id="timer">${icon('timer')}<span>${fmtTime()}</span></span>
@@ -506,35 +597,27 @@ function renderQuestion() {
 
     <div class="qcard ${s.showTr ? 'open' : ''}" data-act="tr" role="button" tabindex="0" aria-expanded="${s.showTr}">
       ${q.img ? `<div class="plate"><img src="${imgSrc(q.img)}" alt="Picture for this question"></div>` : ''}
-      <p class="qtext" lang="it">${esc(q.text)}</p>
+      <p class="qtext" lang="it">${itText(q.text)}</p>
       ${s.showTr
-        ? `<p class="qtr" lang="en"><span class="lang-tag">EN</span>${en ? esc(en) : 'English for this question isn’t ready yet.'}</p>`
-        : `<span class="tap-hint">${icon('globe')}Tap the question for English</span>`}
+        ? `<p class="qtr" lang="en"><span class="lang-tag">EN</span>${en ? esc(en) : 'English for this question isn’t ready yet.'}</p>
+           <p class="qtr fa ${fa ? '' : 'missing'}" lang="fa" dir="rtl"><span class="lang-tag">FA</span>${fa ? esc(fa) : 'ترجمهٔ فارسی این سؤال هنوز آماده نیست.'}</p>`
+        : `<span class="tap-hint">${icon('globe')}Tap for English · <span lang="fa">فارسی</span></span>`}
     </div>
 
-    ${!exam && th ? `
+    ${th && (!exam || answered) ? `
       <button class="theory-chip ${answered && !ok ? 'hl' : ''}" data-act="theory" data-th="${th}">
-        ${thumb(TOPIC.get(th).imgs[0], icon('book'), 'sm')}
+        ${thumb(TOPIC.get(th).imgs[0] || CH_IMG.get(TOPIC.get(th).ch), icon('book'), 'sm')}
         <span><small>Theory for this question</small><b ${S.tab === 'fa' && TR.t[th] && TR.t[th].fa ? 'dir="rtl" lang="fa"' : ''}>${esc(topicTitle(th))}</b></span>
         ${icon('chev')}
       </button>` : ''}
 
-    <div class="abar"><div class="abar-in ${answered && !exam ? (ok ? 'pop' : 'shake') : ''}">${bar}</div></div>
+    <div class="abar"><div class="abar-in ${answered ? (ok ? 'pop' : 'shake') : ''}">${bar}</div></div>
   `;
 }
 function answer(v) {
   const s = session;
   if (!s || s.done) return;
   const q = Q.get(s.ids[s.i]);
-  if (s.mode === 'exam') {
-    s.ans[s.i] = v;
-    renderQuestion();
-    const at = s.i;
-    if (at < s.ids.length - 1) setTimeout(() => {
-      if (session === s && view.name === 'quiz' && s.i === at && sheet.hidden) { s.i++; s.showTr = S.autoEn; renderQuestion(); window.scrollTo(0, 0); }
-    }, 320);
-    return;
-  }
   if (s.ans[s.i] !== null) return;
   s.ans[s.i] = v;
   record(q.id, v === q.ans);
@@ -561,7 +644,6 @@ function finish(timedOut = false) {
   const exam = s.mode === 'exam';
   s.items = s.ids.map((id, i) => ({ id, a: s.ans[i], ok: s.ans[i] === Q.get(id).ans })).filter(x => exam || x.a !== null);
   if (exam) {
-    s.items.forEach(x => { if (x.a !== null) record(x.id, x.ok); });
     S.exams.push({ at: Date.now(), errors: s.items.filter(x => !x.ok).length });
     if (S.exams.length > 200) S.exams = S.exams.slice(-200);
     save();
@@ -601,8 +683,9 @@ function renderResult() {
       const q = Q.get(x.id);
       return `<li class="card">
         ${q.img ? `<div class="plate sm"><img src="${imgSrc(q.img)}" alt="" loading="lazy"></div>` : ''}
-        <p class="rv-it" lang="it">${esc(q.text)}</p>
+        <p class="rv-it" lang="it">${itText(q.text)}</p>
         ${TR.q[x.id] ? `<p class="rv-en" lang="en">${esc(TR.q[x.id])}</p>` : ''}
+        ${TR.qfa[x.id] ? `<p class="rv-en rv-fa" lang="fa" dir="rtl">${esc(TR.qfa[x.id])}</p>` : ''}
         <div class="pills">
           <span class="pill no">You: ${x.a === null ? 'no answer' : x.a ? 'VERO' : 'FALSO'}</span>
           <span class="pill ok">Correct: ${q.ans ? 'VERO' : 'FALSO'}</span>
@@ -622,6 +705,15 @@ function confetti() {
     `<i style="left:${Math.random() * 100}%;background:${pick(colors)};animation-delay:${Math.random() * 0.6}s;animation-duration:${2 + Math.random() * 1.5}s;transform:rotate(${Math.random() * 360}deg)"></i>`).join('');
   document.body.appendChild(box);
   setTimeout(() => box.remove(), 4500);
+}
+
+function toast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.setAttribute('role', 'status');
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3200);
 }
 
 /* ---------- timer ---------- */
@@ -656,10 +748,38 @@ function openGrid() {
   openSheet(`
     <h2 id="sheet-title" class="sheet-h">Exam questions</h2>
     <p class="hint">${s.ans.filter(a => a !== null).length} of ${s.ids.length} answered. Tap a number to go to it.</p>
-    <div class="qgrid">${s.ids.map((_, i) => `<button data-jump="${i}" class="${s.ans[i] !== null ? 'done' : ''} ${i === s.i ? 'cur' : ''}">${i + 1}</button>`).join('')}</div>
+    <div class="qgrid">${s.ids.map((_, i) => `<button data-jump="${i}" class="${s.ans[i] === null ? '' : s.ans[i] === Q.get(s.ids[i]).ans ? 'ok' : 'no'} ${i === s.i ? 'cur' : ''}">${i + 1}</button>`).join('')}</div>
     <button class="btn primary block" data-submit>Submit exam</button>
     <button class="btn block" data-close>Keep going</button>`, 'grid');
 }
+
+/* ---------- install guide ---------- */
+function installHTML(plat = PLATFORM) {
+  const ios = plat === 'ios';
+  const steps = ios ? [
+    ['globe', 'Open this page in <b>Safari</b>', 'Chrome on iPhone also works on iOS 16.4 and later.'],
+    ['share', 'Tap the <b>Share</b> button', 'The square with an arrow, in the bottom bar. On newer iOS versions it may be inside the <b>•••</b> menu.'],
+    ['plusbox', 'Tap <b>Add to Home Screen</b>', 'Scroll down the list if you don’t see it.'],
+    ['check', 'Tap <b>Add</b>', 'Open Sina Patente from its icon. It runs full screen and works offline.']
+  ] : [
+    ['globe', 'Open this page in <b>Chrome</b>', 'Samsung Internet and Edge work too.'],
+    ['dots', 'Tap the <b>⋮</b> menu', 'Top right of the screen.'],
+    ['plusbox', 'Tap <b>Install app</b> or <b>Add to Home screen</b>', 'The wording depends on your phone.'],
+    ['check', 'Tap <b>Install</b>', 'Open Sina Patente from its icon. It runs full screen and works offline.']
+  ];
+  return `
+    <h2 id="sheet-title" class="sheet-h">Put Sina Patente on your home screen</h2>
+    <p class="hint">${isStandalone() ? 'You’re already using the installed app. These steps are for another phone.' : 'It opens like a normal app, full screen, and works without internet.'}</p>
+    <div class="seg" role="tablist" aria-label="Phone type">
+      <button role="tab" data-plat="ios" aria-selected="${ios}">iPhone</button>
+      <button role="tab" data-plat="android" aria-selected="${!ios}">Android</button>
+    </div>
+    ${!ios && installPrompt ? `<button class="btn primary block" data-install>${icon('plusbox')}Install now</button>` : ''}
+    <ol class="steps">${steps.map(([ic, t, sub]) => `<li><span class="step-ic">${icon(ic)}</span><span><b>${t}</b><small>${sub}</small></span></li>`).join('')}</ol>
+    <p class="hint">You can open this guide again from the <b>?</b> button on the Practice tab.</p>
+    <button class="btn block" data-close>Got it</button>`;
+}
+function openInstall(plat) { openSheet(installHTML(plat), 'install'); }
 
 /* ---------- backup ---------- */
 async function exportBackup() {
@@ -689,6 +809,8 @@ function setLang(l) {
   }
 }
 app.addEventListener('click', e => {
+  const g = e.target.closest('[data-goto]');
+  if (g) return gotoLang(g.dataset.goto);
   const b = e.target.closest('[data-act], [data-lang]');
   if (!b) return;
   if (b.dataset.lang) return setLang(b.dataset.lang);
@@ -727,6 +849,9 @@ app.addEventListener('click', e => {
   else if (act === 'again') start(session.mode, session.opts);
   else if (act === 'done') back();
   else if (act === 'autoEn') { S.autoEn = b.checked; save(); }
+  else if (act === 'trap') { S.trap = b.checked; save(); }
+  else if (act === 'goal') { S.goal = +b.dataset.n; save(); const y = window.scrollY; render(); window.scrollTo(0, y); }
+  else if (act === 'install') openInstall();
   else if (act === 'export') exportBackup();
   else if (act === 'import') importBackup();
   else if (act === 'reset') {
@@ -742,6 +867,15 @@ tabbar.addEventListener('click', e => {
 });
 sheet.addEventListener('click', e => {
   if (e.target.closest('[data-close]')) return closeSheet();
+  const g = e.target.closest('[data-goto]');
+  if (g) return gotoLang(g.dataset.goto);
+  const pl = e.target.closest('[data-plat]');
+  if (pl) return openInstall(pl.dataset.plat);
+  if (e.target.closest('[data-install]') && installPrompt) {
+    installPrompt.prompt();
+    installPrompt.userChoice.finally(() => { installPrompt = null; closeSheet(); });
+    return;
+  }
   const l = e.target.closest('[data-lang]');
   if (l) return setLang(l.dataset.lang);
   const j = e.target.closest('[data-jump]');
@@ -760,7 +894,7 @@ document.addEventListener('keydown', e => {
   }
   const exam = session.mode === 'exam';
   const answered = session.ans[session.i] !== null;
-  if (e.key === 'v' || e.key === 'f') { if (exam || !answered) answer(e.key === 'v' ? 1 : 0); }
+  if (e.key === 'v' || e.key === 'f') { if (!answered) answer(e.key === 'v' ? 1 : 0); }
   else if (e.key === 'e') { session.showTr = !session.showTr; renderQuestion(); }
   else if (!exam && answered && e.key === 'Enter') next();
   else if (exam && e.key === 'ArrowRight') move(1);
@@ -771,6 +905,12 @@ document.addEventListener('keydown', e => {
 tabbar.innerHTML = [['home', 'home', 'Practice'], ['theory', 'book', 'Theory'], ['progress', 'chart', 'Progress']]
   .map(([k, i, l]) => `<button data-tab="${k}">${icon(i)}<span>${l}</span></button>`).join('');
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-loadData().then(render).catch(() => {
+loadData().then(() => {
+  render();
+  if (!S.installSeen) {
+    S.installSeen = true; save();
+    if (!isStandalone()) setTimeout(() => { if (view.name === 'home' && sheet.hidden) openInstall(); }, 600);
+  }
+}).catch(() => {
   app.innerHTML = '<p class="empty-note">Couldn\'t load the questions. Check your connection and reopen the app.</p>';
 });
