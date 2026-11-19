@@ -35,6 +35,7 @@ const CH_IMG_EXTRA = {
   25: 252                  // Elementi del veicolo: mechanical assistance sign
 };
 const TR = { q: {}, qfa: {}, t: {} };
+let ART = {};                   // theory id -> [illustration paths] drawn for the app (data/theory_images.json)
 const SEARCH = new Map();       // theory id -> lowercase searchable text
 let S = loadState();
 let view = { name: 'home' };
@@ -54,6 +55,67 @@ function loadState() {
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { /* storage full or blocked */ }
 }
+
+/* ---------- resume where you left off ---------- */
+// The open page (and an unfinished quiz or exam) is kept so the app reopens exactly there.
+// The exam clock is paused while the app is in the background or closed.
+const RESUME_KEY = 'patente.resume.v1';
+let resumeReady = false;   // don't overwrite the saved place before it has been restored
+function saveResume() {
+  if (!resumeReady) return;
+  try {
+    const cur = Object.assign({}, view, { y: window.scrollY });
+    let st = stack;
+    let v = cur;
+    if (view.name === 'result') { v = stack[stack.length - 1] || { name: 'home' }; st = stack.slice(0, -1); }
+    const data = { view: v, stack: st };
+    if (session && !session.done && view.name === 'quiz') {
+      const { mode, opts, title, ids, i, ans, showTr } = session;
+      data.session = { mode, opts, title, ids, i, ans, showTr };
+      if (mode === 'exam') data.session.left = Math.max(0, session.paused != null ? session.paused : session.endsAt - Date.now());
+    }
+    localStorage.setItem(RESUME_KEY, JSON.stringify(data));
+  } catch (e) { /* storage full or blocked */ }
+}
+function validView(v) {
+  if (!v || typeof v !== 'object') return false;
+  if (v.name === 'chapter') return !!chOf(v.ch);
+  if (v.name === 'topic') return TOPIC.has(v.th);
+  return ['home', 'theory', 'progress'].includes(v.name);
+}
+function restoreResume() {
+  let d;
+  try { d = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch (e) { d = null; }
+  if (!d) return false;
+  const st = Array.isArray(d.stack) ? d.stack.filter(validView) : [];
+  const s = d.session;
+  if (s && Array.isArray(s.ids) && s.ids.length && s.ids.every(id => Q.has(id)) && Array.isArray(s.ans) && s.ans.length === s.ids.length) {
+    if (validView(d.view)) st.push(d.view);
+    stack.length = 0; stack.push(...st);
+    session = { mode: s.mode, opts: s.opts || {}, title: s.title, ids: s.ids, ans: s.ans,
+                i: Math.min(Math.max(0, s.i | 0), s.ids.length - 1), showTr: !!s.showTr };
+    view = { name: 'quiz' };
+    if (session.mode === 'exam') { session.endsAt = Date.now() + (s.left || 0); startTimer(); }
+    render();
+    if (session.mode === 'exam' && s.left <= 0) finish(true);
+    else toast(session.mode === 'exam' ? 'Welcome back. Your exam is paused where you left it' : 'Welcome back. Carry on where you left off');
+    return true;
+  }
+  if (!validView(d.view) || d.view.name === 'home' && !st.length) return false;
+  stack.length = 0; stack.push(...st);
+  view = d.view;
+  render();
+  window.scrollTo(0, view.y || 0);
+  return true;
+}
+// Pause the exam clock while the app is hidden, and keep the latest state on disk.
+document.addEventListener('visibilitychange', () => {
+  if (!session || session.done || session.mode !== 'exam' || view.name !== 'quiz') return saveResume();
+  if (document.hidden) { session.paused = Math.max(0, session.endsAt - Date.now()); stopTimer(); }
+  else if (session.paused != null) { session.endsAt = Date.now() + session.paused; session.paused = null; startTimer(); }
+  saveResume();
+});
+window.addEventListener('pagehide', saveResume);
 
 /* ---------- helpers ---------- */
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -166,6 +228,7 @@ async function loadData() {
   }
   for (const [ch, m] of chImg) CH_IMG.set(ch, ranked(m)[0]);
   for (const [ch, img] of Object.entries(CH_IMG_EXTRA)) CH_IMG.set(+ch, img);
+  try { const r = await fetch('data/theory_images.json'); if (r.ok) ART = await r.json(); } catch (e) { /* no illustrations */ }
 
   await Promise.all(CHAPTERS.map(async c => {
     try {
@@ -202,6 +265,7 @@ function render() {
   tabbar.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'));
   ({ home: renderHome, chapter: renderChapter, theory: renderTheoryTab, topic: renderTopicPage,
      progress: renderProgress, quiz: renderQuestion, result: renderResult })[n]();
+  saveResume();
 }
 function go(v) { view.y = window.scrollY; stack.push(view); view = v; render(); window.scrollTo(0, 0); }
 function back() {
@@ -241,7 +305,7 @@ function topicRow(th, from) {
   const info = TOPIC.get(th);
   const sub = TR.t[th] && TR.t[th][subLang()] ? TR.t[th][subLang()][0] : '';
   return `<li><button class="row" data-act="topic" data-th="${th}" data-from="${from}">
-    ${thumb(info.imgs[0] || CH_IMG.get(info.ch), icon('book'), 'sm')}
+    ${thumb(info.imgs[0] || (ART[th] || [])[0] || CH_IMG.get(info.ch), icon('book'), 'sm')}
     <span class="row-main">
       <b lang="it">${esc(THEORY[th][0])}</b>
       ${sub ? `<small ${subLang() === 'fa' ? 'dir="rtl" lang="fa"' : ''}>${esc(sub)}</small>` : ''}
@@ -269,8 +333,11 @@ const THEORY_LANGS = [
 function topicHTML(th, inSheet) {
   const info = TOPIC.get(th);
   const t = TR.t[th] || {};
+  const art = ART[th] || [];
   let imgs = info ? info.imgs : [];
-  if (!imgs.length && info && CH_IMG_EXTRA[info.ch]) imgs = [CH_IMG_EXTRA[info.ch]];
+  if (!imgs.length && !art.length && info && CH_IMG_EXTRA[info.ch]) imgs = [CH_IMG_EXTRA[info.ch]];
+  const pics = [...art.map(src => `<figure class="art"><img src="${esc(src)}" alt="" loading="lazy"></figure>`),
+                ...imgs.map(n => `<figure><img src="${imgSrc(n)}" alt="" loading="lazy"></figure>`)];
   const sections = THEORY_LANGS.map(([lang, label, missing], k) => {
     const body = lang === 'it' ? THEORY[th] : t[lang];
     const rtl = lang === 'fa';
@@ -282,7 +349,7 @@ function topicHTML(th, inSheet) {
     </article>`;
   }).join('');
   return `
-    ${imgs.length ? `<div class="gallery ${imgs.length === 1 ? 'one' : ''}">${imgs.map(n => `<figure><img src="${imgSrc(n)}" alt="" loading="lazy"></figure>`).join('')}</div>` : ''}
+    ${pics.length ? `<div class="gallery ${pics.length === 1 ? 'one' : ''}">${pics.join('')}</div>` : ''}
     <nav class="lang-jump" aria-label="Jump to language">
       ${THEORY_LANGS.map(([lang, label]) => `<button data-goto="${lang}" ${lang === 'fa' ? 'lang="fa"' : ''}>${label}</button>`).join('')}
     </nav>
@@ -475,7 +542,7 @@ function renderProgress() {
       <button class="link danger" data-act="reset">Reset all progress</button>
     </section>
 
-    <p class="footnote">Questions, pictures and Italian theory come from the official Ministry question pool via the community project avalla/quiz-patente-ab (MIT licence). English and Persian translations were written by Claude. Before the real exam, also practise on the Ministry's own simulator.</p>
+    <p class="footnote">Questions, pictures and Italian theory come from the official Ministry question pool via the community project avalla/quiz-patente-ab (MIT licence). English and Persian translations were written by Claude, and the theory illustrations were made with AI. Before the real exam, also practise on the Ministry's own simulator.</p>
   `;
 }
 
@@ -574,13 +641,20 @@ function renderQuestion() {
         <button class="icon-btn" data-act="skip" aria-label="Next question" ${last ? 'disabled' : ''}>${icon('chev')}</button>
       </div>`;
   } else if (!answered) {
-    bar = `<div class="tf">
-      <button class="vero" data-act="answer" data-v="1">VERO<small>True</small></button>
-      <button class="falso" data-act="answer" data-v="0">FALSO<small>False</small></button>
+    bar = `<div class="exam-nav">
+      <button class="icon-btn" data-act="prev" aria-label="Previous question" ${s.i === 0 ? 'disabled' : ''}>${icon('back')}</button>
+      <div class="tf">
+        <button class="vero" data-act="answer" data-v="1">VERO<small>True</small></button>
+        <button class="falso" data-act="answer" data-v="0">FALSO<small>False</small></button>
+      </div>
+      <button class="icon-btn" data-act="next" aria-label="${last ? 'Finish' : 'Skip to next question'}">${icon(last ? 'check' : 'chev')}</button>
     </div>`;
   } else {
     bar = `${verdict}
-      <button class="btn primary block" data-act="next">${last ? 'See results' : 'Next question'}${icon('arrow')}</button>`;
+      <div class="exam-nav">
+        <button class="icon-btn" data-act="prev" aria-label="Previous question" ${s.i === 0 ? 'disabled' : ''}>${icon('back')}</button>
+        <button class="btn primary grow" data-act="next">${last ? 'See results' : 'Next question'}${icon('arrow')}</button>
+      </div>`;
   }
 
   app.innerHTML = `
@@ -606,13 +680,14 @@ function renderQuestion() {
 
     ${th && (!exam || answered) ? `
       <button class="theory-chip ${answered && !ok ? 'hl' : ''}" data-act="theory" data-th="${th}">
-        ${thumb(TOPIC.get(th).imgs[0] || CH_IMG.get(TOPIC.get(th).ch), icon('book'), 'sm')}
+        ${thumb(TOPIC.get(th).imgs[0] || (ART[th] || [])[0] || CH_IMG.get(TOPIC.get(th).ch), icon('book'), 'sm')}
         <span><small>Theory for this question</small><b ${S.tab === 'fa' && TR.t[th] && TR.t[th].fa ? 'dir="rtl" lang="fa"' : ''}>${esc(topicTitle(th))}</b></span>
         ${icon('chev')}
       </button>` : ''}
 
     <div class="abar"><div class="abar-in ${answered ? (ok ? 'pop' : 'shake') : ''}">${bar}</div></div>
   `;
+  saveResume();
 }
 function answer(v) {
   const s = session;
@@ -632,7 +707,10 @@ function move(d) {
   window.scrollTo(0, 0);
 }
 function next() {
-  if (session.i >= session.ids.length - 1) return finish();
+  if (session.i >= session.ids.length - 1) {
+    if (session.mode !== 'exam' && session.ans.every(a => a === null)) { session.done = true; return back(); }
+    return finish();
+  }
   move(1);
 }
 function finish(timedOut = false) {
@@ -897,8 +975,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'v' || e.key === 'f') { if (!answered) answer(e.key === 'v' ? 1 : 0); }
   else if (e.key === 'e') { session.showTr = !session.showTr; renderQuestion(); }
   else if (!exam && answered && e.key === 'Enter') next();
-  else if (exam && e.key === 'ArrowRight') move(1);
-  else if (exam && e.key === 'ArrowLeft') move(-1);
+  else if (e.key === 'ArrowRight') { if (exam) move(1); else next(); }
+  else if (e.key === 'ArrowLeft') move(-1);
 });
 
 /* ---------- boot ---------- */
@@ -906,7 +984,8 @@ tabbar.innerHTML = [['home', 'home', 'Practice'], ['theory', 'book', 'Theory'], 
   .map(([k, i, l]) => `<button data-tab="${k}">${icon(i)}<span>${l}</span></button>`).join('');
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 loadData().then(() => {
-  render();
+  resumeReady = true;
+  if (!restoreResume()) render();
   if (!S.installSeen) {
     S.installSeen = true; save();
     if (!isStandalone()) setTimeout(() => { if (view.name === 'home' && sheet.hidden) openInstall(); }, 600);
